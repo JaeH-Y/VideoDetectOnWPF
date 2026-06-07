@@ -10,9 +10,10 @@ using System.Threading.Tasks;
 
 namespace YoloWithWPF.Services
 {
-    class YoloService
+    class YoloService : IDisposable
     {
         private readonly InferenceSession _session;
+        private readonly InferenceCsvLogger _performanceLogger;
         private readonly string[] _classNames = { "drone", "bird", "plane" };
         private readonly string[] _targetClassNames = { "drone" };
         private const float ConfThreshold = 0.5f;
@@ -27,6 +28,7 @@ namespace YoloWithWPF.Services
         public YoloService(string modelPath, int imgSize = 1280)
         {
             _imgSize = imgSize;
+            _performanceLogger = new InferenceCsvLogger();
 
             try
             {
@@ -70,23 +72,37 @@ namespace YoloWithWPF.Services
         {
             int originH = frame.Height;
             int originW = frame.Width;
+            var totalWatch = Stopwatch.StartNew();
 
             // 전처리
-            var sw = Stopwatch.StartNew();
-            using Mat rgb = new Mat();
-            Preprocess(frame, rgb);
-            FillTensorFromRgb(rgb);
-            //Debug.WriteLine($"전처리: {sw.ElapsedMilliseconds}");
+            var stageWatch = Stopwatch.StartNew();
+            //using Mat rgb = new Mat();
+            //Preprocess(frame, rgb);
+            //FillTensorFromRgb(rgb);
+            using Mat resized = new Mat();
+            PreprocessV2(frame, resized);
+            FillTensorFromBgr(resized);
+            stageWatch.Stop();
+            double preprocessMs = stageWatch.Elapsed.TotalMilliseconds;
 
             // 추론 실행
-            sw.Restart();
+            stageWatch.Restart();
             using var results = RunInference();
-            //Debug.WriteLine($"추론: {sw.ElapsedMilliseconds}");
+            stageWatch.Stop();
+            double inferenceMs = stageWatch.Elapsed.TotalMilliseconds;
 
             // 후처리
-            sw.Restart();
+            stageWatch.Restart();
             var detections = Postprocess(results, originH, originW);
-            //Debug.WriteLine($"후처리: {sw.ElapsedMilliseconds}");
+            stageWatch.Stop();
+            double postprocessMs = stageWatch.Elapsed.TotalMilliseconds;
+
+            totalWatch.Stop();
+            _performanceLogger.Write(
+                preprocessMs,
+                inferenceMs,
+                postprocessMs,
+                totalWatch.Elapsed.TotalMilliseconds);
 
             return detections;
         }
@@ -97,6 +113,11 @@ namespace YoloWithWPF.Services
             using Mat resized = new Mat();
             Cv2.Resize(frame, resized, new Size(_imgSize, _imgSize));
             Cv2.CvtColor(resized, rgb, ColorConversionCodes.BGR2RGB);
+        }
+        private void PreprocessV2(Mat frame, Mat resized)
+        {
+            // resize
+            Cv2.Resize(frame, resized, new Size(_imgSize, _imgSize));
         }
 
         private IDisposableReadOnlyCollection<DisposableNamedOnnxValue> RunInference()
@@ -177,6 +198,22 @@ namespace YoloWithWPF.Services
             }
         }
 
+        // Convert 생략 -> BGR->RGB 변환과 동시에 텐서 채우기
+        private unsafe void FillTensorFromBgr(Mat rgb)
+        {
+            byte* ptr = (byte*)rgb.DataPointer;
+            int area = _imgSize * _imgSize;
+            float scale = 1f / 255f;
+
+            for (int i = 0; i < area; i++)
+            {
+                int src = i * 3;
+
+                _inputBuffer[i] = ptr[src+2] * scale;               // R
+                _inputBuffer[i + area] = ptr[src + 1] * scale;      // G
+                _inputBuffer[i + area * 2] = ptr[src] * scale;      // B
+            }
+        }
         // 신뢰성 높은 순 정렬 -> IOU 필터 객체 다 지우기 == 신뢰도 높은 탐지 객체 중 IOU가 겹치지 않는 객체만 남음
         private List<(Rect, float, string)> ApplyNMS(List<(Rect box, float conf, string label)> detections)
         {
@@ -205,6 +242,12 @@ namespace YoloWithWPF.Services
             float union = a.Width * a.Height + b.Width * b.Height - intersection;
 
             return intersection / union;
+        }
+
+        public void Dispose()
+        {
+            _performanceLogger.Dispose();
+            _session.Dispose();
         }
     }
 }
