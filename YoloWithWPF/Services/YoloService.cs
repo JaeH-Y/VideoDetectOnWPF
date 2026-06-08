@@ -25,6 +25,8 @@ namespace YoloWithWPF.Services
         private readonly int[] _inputShape;
         private readonly object _detectLock = new();
 
+        public bool UseGPU { get; private set; } = false;
+
         public YoloService(string modelPath, int imgSize = 1280)
         {
             _imgSize = imgSize;
@@ -38,7 +40,7 @@ namespace YoloWithWPF.Services
 
                 _session = new InferenceSession(modelPath, options);
 
-
+                UseGPU = true;
                 Debug.WriteLine("GPU 연결 성공");
             }
             catch (Exception ex)

@@ -17,8 +17,13 @@ namespace YoloWithWPF.Services
         private Task? _captureTask;
         private int _frameIndex = 0;
         private string? _currentPath;
+        public bool IsFile;
         public readonly int MaxReconnectAttempts = 3;
         private ConnectStatusEnum _currentStatus = ConnectStatusEnum.Disconnected;
+        private readonly SemaphoreSlim _statusLock = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _connectLock = new SemaphoreSlim(1, 1);
+        private PeriodicTimer? _frameCheckTimer;
+        private Task? _timerTask;
 
         private Stopwatch? _frameStopwatch;
 
@@ -28,10 +33,23 @@ namespace YoloWithWPF.Services
         public event Action<CameraService, ConnectStatusEnum>? OnCameraStatus;
         public event Action<CameraService, int>? OnReconnectCount;
 
-        public async Task<bool> StartVideoAsync(string videoPath)
+        public async Task<CameraOperationResult> StartVideoAsync(string videoPath)
         {
-            await StopAsync();
-            return await Task.Run(() => StartVideo(videoPath));
+            if (!await _connectLock.WaitAsync(0))
+                return CameraOperationResult.Busy;
+
+            try
+            {
+                await StopAsync();
+                bool started = await Task.Run(() => StartVideo(videoPath));
+                return started
+                    ? CameraOperationResult.Success
+                    : CameraOperationResult.Failed;
+            }
+            finally
+            {
+                _connectLock.Release();
+            }
         }
 
         public void StartCamera(int cameraIndex = 0)
@@ -70,6 +88,10 @@ namespace YoloWithWPF.Services
                 OnCameraInfoReady?.Invoke(width, height, fps);
 
                 _captureTask = Task.Run(() => CaptureLoop(runningCapture, _cts.Token));
+                if (!IsFile)
+                {
+                    _timerTask = StartFrameChecker(_cts.Token);
+                }
 
                 // CaptureLoop에 전달 완료, 이제 로컬 변수는 필요 없으므로 null로 설정하여 Dispose 방지
                 capture = null; 
@@ -98,30 +120,34 @@ namespace YoloWithWPF.Services
                 double fps = capture.Get(VideoCaptureProperties.Fps);
                 int delay = fps > 0 ? (int)(1000 / fps) : 33; // fps 못 읽으면 30fps로 fallback
 
+                _frameStopwatch = _frameStopwatch ?? Stopwatch.StartNew();
+
                 while (!token.IsCancellationRequested)
                 {
-                    if (!capture.Read(frame) || frame.Empty())
+                    bool readSuccess = capture.Read(frame);
+
+                    if (token.IsCancellationRequested) break;
+
+                    if (!readSuccess || frame.Empty())
                     {
-                        _frameStopwatch = _frameStopwatch ?? Stopwatch.StartNew();
-                        OnCameraStatus?.Invoke(this, ConnectStatusEnum.FrameReceiveStopped);
-                        
-                        if (_frameStopwatch.Elapsed >= TimeSpan.FromSeconds(5))
+                        if (IsFile)
                         {
-                            OnCameraStatus?.Invoke(this, ConnectStatusEnum.Disconnected);
-                            _ = TryReconnect();
-                            _frameStopwatch.Stop();
-                            _frameStopwatch = null; // 재시도 후 타이머 초기화
+                            SetCameraStatus(ConnectStatusEnum.FileStreamDone);
                             break;
                         }
 
-                        token.WaitHandle.WaitOne(1000); // 1초 대기 후 재시도
+                        SetCameraStatus(ConnectStatusEnum.FrameReceiveStopped);
+
+                        if (token.WaitHandle.WaitOne(1000)) break;
+
                         continue;
                     }
 
+                    _frameStopwatch.Restart();
+
                     if(_currentStatus != ConnectStatusEnum.Connected)
                     {
-                        OnCameraStatus?.Invoke(this, ConnectStatusEnum.Connected);
-                        _currentStatus = ConnectStatusEnum.Connected;
+                        SetCameraStatus(ConnectStatusEnum.Connected);
                     }
                     OnFrameReady?.Invoke(this, frame.Clone());
                     if (_frameIndex++ % 3 == 0)
@@ -144,39 +170,116 @@ namespace YoloWithWPF.Services
             }
         }
 
-        public async Task TryReconnect()
+        private async Task StartFrameChecker(CancellationToken token)
         {
-            if (string.IsNullOrEmpty(_currentPath))
-                return;
-
-            OnCameraStatus?.Invoke(this, ConnectStatusEnum.Reconnecting);
-            // 루프 해제 후 재시도
-            for (int i = 1; i <= MaxReconnectAttempts; i++)
+            if(_frameCheckTimer == null)
             {
-                OnReconnectCount?.Invoke(this, i);
-                bool reconnect = await StartVideoAsync(_currentPath);
-                if (reconnect)
-                {
-                    OnCameraStatus?.Invoke(this, ConnectStatusEnum.Connecting);
-                    if(_frameStopwatch != null)
-                    {
-                        _frameStopwatch.Stop();
-                        _frameStopwatch = null;
-                    }
-                    return;
-                }
-                await Task.Delay(1000); // 재시도 간격
+                _frameCheckTimer = new(TimeSpan.FromSeconds(1));
             }
-            OnCameraStatus?.Invoke(this, ConnectStatusEnum.AutoReconnectFailed);
+            try
+            {
+                bool timedOut = false;
+                while (await _frameCheckTimer.WaitForNextTickAsync(token))
+                {
+                    if (_frameStopwatch?.Elapsed.TotalSeconds > 5)
+                    {
+                        timedOut = true;
+                        break;
+                    }
+                }
+                if (!timedOut || IsFile) return;
+                
+                SetCameraStatus(ConnectStatusEnum.Disconnected);
+                _ = TryReconnect(); // 데드락 방지
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Frame 수신 체크 중 오류 발생: {ex.Message}");
+            }
+        }
+
+        public async Task<CameraOperationResult> TryReconnect()
+        {
+            if (!await _statusLock.WaitAsync(0))
+                return CameraOperationResult.Busy;
+
+            try
+            {
+                if (string.IsNullOrEmpty(_currentPath))
+                    return CameraOperationResult.Failed;
+
+                SetCameraStatus(ConnectStatusEnum.Reconnecting);
+
+                for (int i = 1; i <= MaxReconnectAttempts; i++)
+                {
+                    OnReconnectCount?.Invoke(this, i);
+                    CameraOperationResult reconnect = await StartVideoAsync(_currentPath);
+
+                    if (reconnect == CameraOperationResult.Success)
+                    {
+                        SetCameraStatus(ConnectStatusEnum.Connecting);
+                        if (_frameStopwatch != null)
+                        {
+                            _frameStopwatch.Stop();
+                            _frameStopwatch = null;
+                        }
+                        return CameraOperationResult.Success;
+                    }
+
+                    if (reconnect == CameraOperationResult.Busy)
+                        return CameraOperationResult.Busy;
+
+                    await Task.Delay(1000);
+                }
+
+                SetCameraStatus(ConnectStatusEnum.AutoReconnectFailed);
+                return CameraOperationResult.Failed;
+            }
+            finally
+            {
+                _statusLock.Release();
+            }
         }   
+
+        private void SetCameraStatus(ConnectStatusEnum status)
+        {
+            _currentStatus = status;
+            OnCameraStatus?.Invoke(this, _currentStatus);
+        }
+
+        public async Task<CameraOperationResult> DeleteCamera()
+        {
+            if (!await _statusLock.WaitAsync(0))
+                return CameraOperationResult.Busy;
+
+            try
+            {
+                await StopAsync();
+                return CameraOperationResult.Success;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"카메라 삭제 실패: {ex.Message}");
+                return CameraOperationResult.Failed;
+            }
+            finally
+            {
+                _statusLock.Release();
+            }
+        }
 
         public async Task StopAsync()
         {
             CancellationTokenSource? cts = _cts;
             Task? task = _captureTask;
+            Task? timerTask = _timerTask;
 
             _cts = null;
             _captureTask = null;
+            _timerTask = null;
             _capture = null;
 
             if (cts == null)
@@ -189,7 +292,9 @@ namespace YoloWithWPF.Services
             {
                 cts.Cancel();
                 if (task != null)
-                    await task;
+                    await Task.WhenAny(task, Task.Delay(2000));
+                if(timerTask != null)
+                    _ = timerTask;  // 데드락 방지
             }
             catch (OperationCanceledException)
             {
@@ -202,6 +307,9 @@ namespace YoloWithWPF.Services
             finally
             {
                 cts.Dispose();
+                _frameCheckTimer?.Dispose();
+                _frameCheckTimer = null;
+                _frameStopwatch = null;
             }
         }
     }

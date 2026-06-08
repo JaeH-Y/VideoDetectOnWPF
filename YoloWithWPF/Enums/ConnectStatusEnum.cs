@@ -21,6 +21,8 @@ namespace YoloWithWPF.Enums
         // 자동 재연결 실패
         AutoReconnectFailed,
         // 프레임 수신 중지
-        FrameReceiveStopped
+        FrameReceiveStopped,
+        // 영상 파일 종료
+        FileStreamDone
     }
 }

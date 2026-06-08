@@ -66,7 +66,7 @@ namespace YoloWithWPF.Models
             set => SetProperty(ref _connectStatus, value);
         }
 
-        private int _reconnectCount;
+        private int _reconnectCount = 0;
         public int ReconnectCount
         {
             get => _reconnectCount;
@@ -75,7 +75,7 @@ namespace YoloWithWPF.Models
                 if(value != _reconnectCount)
                 {
                     SetProperty(ref _reconnectCount, value);
-                    if(ConnectStatus.Equals("재연결 중..."))
+                    if(Status == ConnectStatusEnum.Reconnecting)
                     {
                         ConnectStatus = $"재연결 중... {ReconnectCount}/{Service.MaxReconnectAttempts}회";
                     }
@@ -95,6 +95,13 @@ namespace YoloWithWPF.Models
         {
             get => _reconnectEnabled;
             set => SetProperty(ref _reconnectEnabled, value);
+        }
+
+        private bool _deleteEnabled = true;
+        public bool DeleteEnabled
+        {
+            get => _deleteEnabled;
+            set => SetProperty(ref _deleteEnabled, value);
         }
 
         public int FrameCount { get; set; }
@@ -117,27 +124,37 @@ namespace YoloWithWPF.Models
                     ConnectStatus = "연결됨";
                     ReconnectVisibility = Visibility.Hidden;
                     ReconnectEnabled = false;
+                    DeleteEnabled = true;
                     ReconnectCount = 0;
                     break;
                 case ConnectStatusEnum.Connecting:
                     ConnectStatus = "연결 중...";
+                    DeleteEnabled = false;
                     break;
                 case ConnectStatusEnum.ConnectionFailed:
                     ConnectStatus = "연결 실패";
+                    DeleteEnabled = true;
                     break;
                 case ConnectStatusEnum.Disconnected:
                     ConnectStatus = "연결 끊김";
+                    DeleteEnabled = true;
                     break;
                 case ConnectStatusEnum.Reconnecting:
                     ConnectStatus = "재연결 중...";
+                    DeleteEnabled = false;
                     break;
                 case ConnectStatusEnum.AutoReconnectFailed:
                     ConnectStatus = "자동 재연결 실패";
                     ReconnectVisibility = Visibility.Visible;
                     ReconnectEnabled = true;
+                    DeleteEnabled = true;
                     break;
                 case ConnectStatusEnum.FrameReceiveStopped:
                     ConnectStatus = "영상 끊김";
+                    break;
+                case ConnectStatusEnum.FileStreamDone:
+                    ConnectStatus = "파일 스트림 완료";
+                    DeleteEnabled = true;
                     break;
                 default:
                     ConnectStatus = "알 수 없는 상태";

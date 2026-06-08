@@ -176,6 +176,7 @@
                                                         <Button Content="삭제"
                                                                 Style="{StaticResource GhostButtonStyle}"
                                                                 Padding="8,4"
+                                                                IsEnabled="{Binding DeleteEnabled}"
                                                                 Command="{Binding DataContext.RemoveCameraCommand,
                                                                     RelativeSource={RelativeSource AncestorType=Window}}"
                                                                 CommandParameter="{Binding}"/>

@@ -113,6 +113,7 @@ namespace YoloWithWPF.ViewModels
         public MainViewModel()
         {
             _yoloService = new YoloService(_modelPath);
+            InfoMessage = _yoloService.UseGPU ? "GPU 연결 성공" : "CUDA 실패, CPU로 실행";
 
             AddRtspCommand = new AsyncRelayCommand(AddRtsp);
             SelectCameraCommand = new RelayCommand<CameraStreamItem>(SelectCamera);
@@ -158,9 +159,11 @@ namespace YoloWithWPF.ViewModels
             Action<double, double, double> infoHandler = (w, h, fps) => CameraInfoHandler(item, w, h, fps);
             item.Service.OnCameraInfoReady += infoHandler;
 
-            bool result = await item.Service.StartVideoAsync(input);  // 파일/RTSP 모두 동일 메서드로 처리
+            item.Service.IsFile = isFile;
 
-            if (result)
+            CameraOperationResult result = await item.Service.StartVideoAsync(input);
+
+            if (result == CameraOperationResult.Success)
             {
                 CameraList.Add(item);
 
@@ -176,7 +179,9 @@ namespace YoloWithWPF.ViewModels
                 item.Service.OnReconnectCount -= OnReconnectCountHandler;
                 item.Service.OnCameraInfoReady -= infoHandler;
 
-                InfoMessage = $"카메라 추가 실패: 주소 또는 파일을 확인하세요. 현재 입력 주소: {input}";
+                InfoMessage = result == CameraOperationResult.Busy
+                    ? "다른 카메라 작업이 진행 중입니다. 잠시 후 다시 시도하세요."
+                    : $"카메라 추가 실패: 주소 또는 파일을 확인하세요. 현재 입력 주소: {input}";
             }
         }
 
@@ -202,19 +207,41 @@ namespace YoloWithWPF.ViewModels
         private async Task RemoveCamera(CameraStreamItem? item)
         {
             if (item == null) return;
-            // 선택된 카메라가 제거되는 경우 Selected 초기화
-            if (ReferenceEquals(item, SelectedCamera))
+
+            item.DeleteEnabled = false;
+
+            bool wasSelected = ReferenceEquals(item, SelectedCamera);
+
+            if (wasSelected)
             {
+                item.Service.OnFrameReady -= OnFrameReady;
                 SelectedCamera = null;
                 CurrentFrame = null;
                 CurrentResolution = "-";
                 CurrentFps = "-";
                 Detections.Clear();
                 DetectionResult = "탐지 없음";
-                item.Service.OnFrameReady -= OnFrameReady;
             }
+
+            var result = await item.Service.DeleteCamera();
+
+            if (result != CameraOperationResult.Success)
+            {
+                if (wasSelected)
+                {
+                    item.Service.OnFrameReady += OnFrameReady;
+                    SelectedCamera = item;
+                }
+
+                item.DeleteEnabled = true;
+                InfoMessage = "삭제 실패, 잠시 후 재시도 해주세요.";
+                return;
+            }
+
             item.Service.OnThumbnailReady -= UpdateThumbnail;
-            await item.Service.StopAsync();
+            item.Service.OnCameraStatus -= OnCameraStatusHandler;
+            item.Service.OnReconnectCount -= OnReconnectCountHandler;
+
             CameraList.Remove(item);
             InfoMessage = $"{item.Name} 제거됨";
         }
@@ -224,7 +251,18 @@ namespace YoloWithWPF.ViewModels
             if (item == null) return;
 
             item.ReconnectEnabled = false;
-            await item.Service.TryReconnect();
+            CameraOperationResult result = await item.Service.TryReconnect();
+
+            if (result == CameraOperationResult.Busy)
+            {
+                item.ReconnectEnabled = true;
+                InfoMessage = $"{item.Name}에서 다른 작업이 진행 중입니다.";
+            }
+            else if (result == CameraOperationResult.Failed)
+            {
+                item.ReconnectEnabled = true;
+                InfoMessage = $"{item.Name} 재연결에 실패했습니다.";
+            }
         }
 
         private void UpdateThumbnail(CameraService service, Mat frame)
@@ -383,7 +421,7 @@ namespace YoloWithWPF.ViewModels
                 camera.Service.OnThumbnailReady -= UpdateThumbnail;
                 camera.Service.OnCameraStatus -= OnCameraStatusHandler;
                 camera.Service.OnReconnectCount -= OnReconnectCountHandler;
-                await camera.Service.StopAsync();
+                await camera.Service.DeleteCamera();
             }
 
             // YOLO 서비스 정리
