@@ -132,16 +132,56 @@
                                        Stretch="Uniform"
                                        RenderOptions.BitmapScalingMode="LowQuality"/>
                                             </Border>
-                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                <TextBlock Text="{Binding Name}"
-                                           Style="{StaticResource TextPrimaryStyle}"
-                                           FontSize="12"
-                                           Margin="0,0,0,4"/>
-                                                <TextBlock Text="{Binding RtspUrl}"
-                                           Style="{StaticResource TextSecondaryStyle}"
-                                           FontSize="10"
-                                           TextTrimming="CharacterEllipsis"/>
-                                            </StackPanel>
+                                            <Grid Grid.Column="1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding Name}"
+                                               Style="{StaticResource TextPrimaryStyle}"
+                                               FontSize="12"
+                                               Margin="0,0,0,4"/>
+                                                    <TextBlock Text="{Binding RtspUrl}"
+                                               Style="{StaticResource TextSecondaryStyle}"
+                                               FontSize="10"
+                                               TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="1"
+                                                            VerticalAlignment="Center"
+                                                            HorizontalAlignment="Right"
+                                                            Margin="8,0,4,0">
+                                                    <StackPanel Orientation="Horizontal"
+                                                                HorizontalAlignment="Right"
+                                                                Margin="0,0,0,6">
+                                                        <Ellipse Style="{StaticResource CameraStatusIndicatorStyle}"
+                                                                 Margin="0,0,6,0"
+                                                                 VerticalAlignment="Center"/>
+                                                        <TextBlock Text="{Binding ConnectStatus}"
+                                                                   Style="{StaticResource TextLabelStyle}"
+                                                                   VerticalAlignment="Center"/>
+                                                    </StackPanel>
+
+                                                    <StackPanel Orientation="Horizontal"
+                                                                HorizontalAlignment="Right">
+                                                        <Button Content="재연결"
+                                                                Style="{StaticResource GhostButtonStyle}"
+                                                                Padding="8,4"
+                                                                Margin="6,0,0,0"
+                                                                Visibility="{Binding ReconnectVisibility}"
+                                                                IsEnabled="{Binding ReconnectEnabled}"
+                                                                Command="{Binding DataContext.ReconnectCameraCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                        <Button Content="삭제"
+                                                                Style="{StaticResource GhostButtonStyle}"
+                                                                Padding="8,4"
+                                                                Command="{Binding DataContext.RemoveCameraCommand,
+                                                                    RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                CommandParameter="{Binding}"/>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
                                         </Grid>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>

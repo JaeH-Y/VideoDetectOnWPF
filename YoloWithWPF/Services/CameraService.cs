@@ -1,9 +1,12 @@
 ﻿using OpenCvSharp;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows.Threading;
+using YoloWithWPF.Enums;
 
 namespace YoloWithWPF.Services
 {
@@ -13,10 +16,17 @@ namespace YoloWithWPF.Services
         private CancellationTokenSource? _cts;
         private Task? _captureTask;
         private int _frameIndex = 0;
+        private string? _currentPath;
+        public readonly int MaxReconnectAttempts = 3;
+        private ConnectStatusEnum _currentStatus = ConnectStatusEnum.Disconnected;
+
+        private Stopwatch? _frameStopwatch;
 
         public event Action<CameraService, Mat>? OnFrameReady;
         public event Action<CameraService, Mat>? OnThumbnailReady;
         public event Action<double, double, double>? OnCameraInfoReady; // width, height, fps
+        public event Action<CameraService, ConnectStatusEnum>? OnCameraStatus;
+        public event Action<CameraService, int>? OnReconnectCount;
 
         public async Task<bool> StartVideoAsync(string videoPath)
         {
@@ -46,6 +56,7 @@ namespace YoloWithWPF.Services
                     throw new Exception("영상 파일을 열 수 없습니다.");
                 }
 
+                _currentPath = videoPath;
                 double width = capture.Get(VideoCaptureProperties.FrameWidth);
                 double height = capture.Get(VideoCaptureProperties.FrameHeight);
                 double fps = capture.Get(VideoCaptureProperties.Fps);
@@ -89,8 +100,29 @@ namespace YoloWithWPF.Services
 
                 while (!token.IsCancellationRequested)
                 {
-                    if (!capture.Read(frame) || frame.Empty()) break;
+                    if (!capture.Read(frame) || frame.Empty())
+                    {
+                        _frameStopwatch = _frameStopwatch ?? Stopwatch.StartNew();
+                        OnCameraStatus?.Invoke(this, ConnectStatusEnum.FrameReceiveStopped);
+                        
+                        if (_frameStopwatch.Elapsed >= TimeSpan.FromSeconds(5))
+                        {
+                            OnCameraStatus?.Invoke(this, ConnectStatusEnum.Disconnected);
+                            _ = TryReconnect();
+                            _frameStopwatch.Stop();
+                            _frameStopwatch = null; // 재시도 후 타이머 초기화
+                            break;
+                        }
 
+                        token.WaitHandle.WaitOne(1000); // 1초 대기 후 재시도
+                        continue;
+                    }
+
+                    if(_currentStatus != ConnectStatusEnum.Connected)
+                    {
+                        OnCameraStatus?.Invoke(this, ConnectStatusEnum.Connected);
+                        _currentStatus = ConnectStatusEnum.Connected;
+                    }
                     OnFrameReady?.Invoke(this, frame.Clone());
                     if (_frameIndex++ % 3 == 0)
                         OnThumbnailReady?.Invoke(this, frame.Clone());
@@ -111,6 +143,32 @@ namespace YoloWithWPF.Services
                 capture.Dispose();
             }
         }
+
+        public async Task TryReconnect()
+        {
+            if (string.IsNullOrEmpty(_currentPath))
+                return;
+
+            OnCameraStatus?.Invoke(this, ConnectStatusEnum.Reconnecting);
+            // 루프 해제 후 재시도
+            for (int i = 1; i <= MaxReconnectAttempts; i++)
+            {
+                OnReconnectCount?.Invoke(this, i);
+                bool reconnect = await StartVideoAsync(_currentPath);
+                if (reconnect)
+                {
+                    OnCameraStatus?.Invoke(this, ConnectStatusEnum.Connecting);
+                    if(_frameStopwatch != null)
+                    {
+                        _frameStopwatch.Stop();
+                        _frameStopwatch = null;
+                    }
+                    return;
+                }
+                await Task.Delay(1000); // 재시도 간격
+            }
+            OnCameraStatus?.Invoke(this, ConnectStatusEnum.AutoReconnectFailed);
+        }   
 
         public async Task StopAsync()
         {

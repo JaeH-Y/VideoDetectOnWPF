@@ -7,12 +7,14 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Drawing.Printing;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
+using YoloWithWPF.Enums;
 using YoloWithWPF.Models;
 using YoloWithWPF.Services;
 using YoloWithWPF.Views;
@@ -24,9 +26,10 @@ namespace YoloWithWPF.ViewModels
 
         private readonly YoloService _yoloService;
         private readonly SemaphoreSlim _detectionSemaphore = new SemaphoreSlim(1, 1);
+        private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "new_best.onnx");
 
         private BitmapSource? _currentFrame;
-        public BitmapSource CurrentFrame
+        public BitmapSource? CurrentFrame
         {
             get => _currentFrame;
             set => SetProperty(ref _currentFrame, value);
@@ -43,8 +46,8 @@ namespace YoloWithWPF.ViewModels
         }
 
         // 메인 영상 표시용
-        private CameraStreamItem _selectedCamera;
-        public CameraStreamItem SelectedCamera
+        private CameraStreamItem? _selectedCamera;
+        public CameraStreamItem? SelectedCamera
         {
             get => _selectedCamera;
             set
@@ -94,26 +97,27 @@ namespace YoloWithWPF.ViewModels
             set => SetProperty(ref _infoMessage, value);
         }
 
-        private List<(OpenCvSharp.Rect box, float conf, string label)> _detections;
+        private List<(OpenCvSharp.Rect box, float conf, string label)> _detections = new();
         public List<(OpenCvSharp.Rect box, float conf, string label)> Detections
         {
             get => _detections;
             set => SetProperty(ref _detections, value);
         }
 
-        public ICommand OpenVideoCommand { get; }
-        public ICommand StartCameraCommand { get; }
-        public ICommand StopCommand { get; }
         public ICommand AddRtspCommand { get; }
 
         public ICommand SelectCameraCommand { get; }
+        public ICommand RemoveCameraCommand { get; }
+        public ICommand ReconnectCameraCommand { get; }
 
         public MainViewModel()
         {
-            _yoloService = new YoloService(@"C:\Workspace\c#\wpf\YoloWithWPF\YoloWithWPF\new_best.onnx");
+            _yoloService = new YoloService(_modelPath);
 
             AddRtspCommand = new AsyncRelayCommand(AddRtsp);
             SelectCameraCommand = new RelayCommand<CameraStreamItem>(SelectCamera);
+            RemoveCameraCommand = new AsyncRelayCommand<CameraStreamItem>(RemoveCamera);
+            ReconnectCameraCommand = new AsyncRelayCommand<CameraStreamItem>(ReconnectCamera);
         }
 
         private async Task AddRtsp()
@@ -148,29 +152,31 @@ namespace YoloWithWPF.ViewModels
                 resolution: "-"
             );
 
-            Action<CameraService, Mat> thumbnailHandler = (service, frame) => UpdateThumbnail(service, item, frame);
-            item.Service.OnThumbnailReady += thumbnailHandler;
+            item.Service.OnThumbnailReady += UpdateThumbnail;
+            item.Service.OnCameraStatus += OnCameraStatusHandler;
+            item.Service.OnReconnectCount += OnReconnectCountHandler;
             Action<double, double, double> infoHandler = (w, h, fps) => CameraInfoHandler(item, w, h, fps);
             item.Service.OnCameraInfoReady += infoHandler;
-            if (CameraList.Count == 0)
-                SelectCamera(item);
 
             bool result = await item.Service.StartVideoAsync(input);  // 파일/RTSP 모두 동일 메서드로 처리
+
             if (result)
             {
                 CameraList.Add(item);
+
+                if (CameraList.Count == 1)
+                    SelectCamera(item);
+
                 InfoMessage = $"{item.Name} 추가됨";
             }
             else
             {
-                item.Service.OnThumbnailReady -= thumbnailHandler;
+                item.Service.OnThumbnailReady -= UpdateThumbnail;
+                item.Service.OnCameraStatus -= OnCameraStatusHandler;
+                item.Service.OnReconnectCount -= OnReconnectCountHandler;
                 item.Service.OnCameraInfoReady -= infoHandler;
-                if (_selectedCamera == item)
-                {
-                    _selectedCamera.Service.OnFrameReady -= OnFrameReady;
-                    _selectedCamera = null;
-                }
-                InfoMessage = $"{item.Name} 추가 실패";
+
+                InfoMessage = $"카메라 추가 실패: 주소 또는 파일을 확인하세요. 현재 입력 주소: {input}";
             }
         }
 
@@ -193,9 +199,38 @@ namespace YoloWithWPF.ViewModels
             InfoMessage = $"{item.Name} 선택됨";
         }
 
-        private void UpdateThumbnail(CameraService service, CameraStreamItem item, Mat frame)
+        private async Task RemoveCamera(CameraStreamItem? item)
         {
-            if (!ReferenceEquals(service, item.Service))
+            if (item == null) return;
+            // 선택된 카메라가 제거되는 경우 Selected 초기화
+            if (ReferenceEquals(item, SelectedCamera))
+            {
+                SelectedCamera = null;
+                CurrentFrame = null;
+                CurrentResolution = "-";
+                CurrentFps = "-";
+                Detections.Clear();
+                DetectionResult = "탐지 없음";
+                item.Service.OnFrameReady -= OnFrameReady;
+            }
+            item.Service.OnThumbnailReady -= UpdateThumbnail;
+            await item.Service.StopAsync();
+            CameraList.Remove(item);
+            InfoMessage = $"{item.Name} 제거됨";
+        }
+
+        private async Task ReconnectCamera(CameraStreamItem? item)
+        {
+            if (item == null) return;
+
+            item.ReconnectEnabled = false;
+            await item.Service.TryReconnect();
+        }
+
+        private void UpdateThumbnail(CameraService service, Mat frame)
+        {
+            var item = CameraList.FirstOrDefault(c => ReferenceEquals(c.Service, service));
+            if (item == null) 
             {
                 frame.Dispose();
                 return;
@@ -312,6 +347,50 @@ namespace YoloWithWPF.ViewModels
                     CurrentFps = $"{item.Fps:F1} fps";
                 });
             }
+        }
+
+        private void OnCameraStatusHandler(CameraService service, ConnectStatusEnum status)
+        {
+            var item = CameraList.FirstOrDefault(c => ReferenceEquals(c.Service, service));
+            if (item == null) return;
+
+            item.Status = status;
+        }
+
+        private void OnReconnectCountHandler(CameraService service, int count)
+        {
+            var item = CameraList.FirstOrDefault(c => ReferenceEquals(c.Service, service));
+            if (item == null) return;
+            
+            item.ReconnectCount = count;
+            
+            InfoMessage = $"{item.Name} 재연결 시도: {count}회";
+            if(count >= item.Service.MaxReconnectAttempts)
+            {
+                InfoMessage = $"{item.Name} 재연결 실패: 최대 시도 횟수 초과";
+            }
+        }
+
+        public async Task DisposeAsync()
+        {
+            // 추론 이벤트 해제
+            if(SelectedCamera != null)
+                SelectedCamera.Service.OnFrameReady -= OnFrameReady;
+
+            // 카메라 서비스 정리
+            foreach (var camera in CameraList)
+            {
+                camera.Service.OnThumbnailReady -= UpdateThumbnail;
+                camera.Service.OnCameraStatus -= OnCameraStatusHandler;
+                camera.Service.OnReconnectCount -= OnReconnectCountHandler;
+                await camera.Service.StopAsync();
+            }
+
+            // YOLO 서비스 정리
+            _yoloService.Dispose();
+
+            // 세마포어 해제
+            _detectionSemaphore.Dispose();
         }
     }
 }

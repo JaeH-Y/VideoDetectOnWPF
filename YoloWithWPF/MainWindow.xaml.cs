@@ -27,5 +27,10 @@ namespace YoloWithWPF
             DataContext = _viewModel;
         }
 
+        protected override async void OnClosed(EventArgs e)
+        {
+            await _viewModel.DisposeAsync();
+            base.OnClosed(e);
+        }
     }
 }

@@ -56,7 +56,7 @@ namespace YoloWithWPF.Services
                 _inputShape = new[] { 1, 3, _imgSize, _imgSize };
                 _inputBuffer = new float[3 * _imgSize * _imgSize];
                 _inputTensor = new DenseTensor<float>(_inputBuffer, _inputShape);
-                _inputName = _session.InputMetadata.Keys.First();
+                _inputName = _session!.InputMetadata.Keys.First();
             }
         }
 
