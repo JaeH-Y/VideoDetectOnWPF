@@ -186,6 +186,10 @@ namespace YoloWithWPF.Services
                         timedOut = true;
                         break;
                     }
+                    else if(_frameStopwatch?.Elapsed.TotalSeconds >= 1)
+                    {
+                        SetCameraStatus(ConnectStatusEnum.FrameReceiveStopped);
+                    }
                 }
                 if (!timedOut || IsFile) return;
                 
@@ -246,6 +250,7 @@ namespace YoloWithWPF.Services
 
         private void SetCameraStatus(ConnectStatusEnum status)
         {
+            if(_currentStatus == status) return;
             _currentStatus = status;
             OnCameraStatus?.Invoke(this, _currentStatus);
         }
