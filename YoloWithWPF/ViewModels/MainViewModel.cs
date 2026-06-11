@@ -403,7 +403,7 @@ namespace YoloWithWPF.ViewModels
             item.ReconnectCount = count;
             
             InfoMessage = $"{item.Name} 재연결 시도: {count}회";
-            if(count >= item.Service.MaxReconnectAttempts)
+            if(count > item.Service.MaxReconnectAttempts)
             {
                 InfoMessage = $"{item.Name} 재연결 실패: 최대 시도 횟수 초과";
             }

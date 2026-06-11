@@ -238,7 +238,7 @@ namespace YoloWithWPF.Services
 
                     await Task.Delay(1000);
                 }
-
+                OnReconnectCount?.Invoke(this, MaxReconnectAttempts+1);
                 SetCameraStatus(ConnectStatusEnum.AutoReconnectFailed);
                 return CameraOperationResult.Failed;
             }
