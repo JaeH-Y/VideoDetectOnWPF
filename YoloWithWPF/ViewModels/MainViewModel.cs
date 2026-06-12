@@ -26,7 +26,7 @@ namespace YoloWithWPF.ViewModels
 
         private readonly YoloService _yoloService;
         private readonly SemaphoreSlim _detectionSemaphore = new SemaphoreSlim(1, 1);
-        private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "new_best.onnx");
+        private readonly string _modelPath = Path.Combine(AppContext.BaseDirectory, "hugging_best.onnx");
 
         private BitmapSource? _currentFrame;
         public BitmapSource? CurrentFrame

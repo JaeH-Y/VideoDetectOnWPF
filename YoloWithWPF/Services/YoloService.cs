@@ -27,7 +27,7 @@ namespace YoloWithWPF.Services
 
         public bool UseGPU { get; private set; } = false;
 
-        public YoloService(string modelPath, int imgSize = 1280)
+        public YoloService(string modelPath, int imgSize = 640)
         {
             _imgSize = imgSize;
             _performanceLogger = new InferenceCsvLogger();
